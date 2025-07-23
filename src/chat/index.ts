@@ -507,7 +507,15 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
 
             const delta = choice.delta;
 
-            if (delta.content != null) {
+            if (delta.content?.length) {
+              if (reasoningStarted) {
+                controller.enqueue({
+                  type: 'reasoning-end',
+                  id: reasoningId || generateId(),
+                });
+                reasoningStarted = false;
+              }
+
               if (!textStarted) {
                 textId = openrouterResponseId || generateId();
                 controller.enqueue({
@@ -516,6 +524,7 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
                 });
                 textStarted = true;
               }
+
               controller.enqueue({
                 type: 'text-delta',
                 delta: delta.content,
@@ -532,6 +541,7 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
                 });
                 reasoningStarted = true;
               }
+              
               controller.enqueue({
                 type: 'reasoning-delta',
                 delta: chunkText,
@@ -539,9 +549,6 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
               });
             };
 
-            if (delta.reasoning != null) {
-              emitReasoningChunk(delta.reasoning);
-            }
             if (delta.reasoning_details && delta.reasoning_details.length > 0) {
               for (const detail of delta.reasoning_details) {
                 switch (detail.type) {
@@ -569,6 +576,8 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
                   }
                 }
               }
+            } else if (delta.reasoning != null) {
+              emitReasoningChunk(delta.reasoning);
             }
 
             if (delta.tool_calls != null) {
@@ -721,16 +730,17 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
               }
             }
 
-            if (textStarted) {
-              controller.enqueue({
-                type: 'text-end',
-                id: textId || generateId(),
-              });
-            }
             if (reasoningStarted) {
               controller.enqueue({
                 type: 'reasoning-end',
                 id: reasoningId || generateId(),
+              });
+            }
+
+            if (textStarted) {
+              controller.enqueue({
+                type: 'text-end',
+                id: textId || generateId(),
               });
             }
 
