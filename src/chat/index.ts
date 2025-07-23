@@ -576,7 +576,7 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
                   }
                 }
               }
-            } else if (delta.reasoning != null) {
+            } else if (delta.reasoning?.length) {
               emitReasoningChunk(delta.reasoning);
             }
 
