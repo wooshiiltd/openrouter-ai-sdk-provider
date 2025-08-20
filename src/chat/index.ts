@@ -669,8 +669,10 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
                     });
                   }
 
+                  const toolId = toolCallDelta.id.startsWith('tool_0_') ? generateId() : toolCallDelta.id;
+
                   toolCalls[index] = {
-                    id: toolCallDelta.id,
+                    id: toolId,
                     type: 'function',
                     function: {
                       name: toolCallDelta.function.name,
@@ -696,31 +698,33 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
 
                     controller.enqueue({
                       type: 'tool-input-start',
-                      id: toolCall.id,
+                      id: toolId,
                       toolName: toolCall.function.name,
                     });
 
                     // send delta
                     controller.enqueue({
                       type: 'tool-input-delta',
-                      id: toolCall.id,
+                      id: toolId,
                       delta: toolCall.function.arguments,
                     });
 
                     controller.enqueue({
                       type: 'tool-input-end',
-                      id: toolCall.id,
+                      id: toolId,
                     });
 
                     // send tool call
                     controller.enqueue({
                       type: 'tool-call',
-                      toolCallId: toolCall.id,
+                      toolCallId: toolId,
                       toolName: toolCall.function.name,
                       input: toolCall.function.arguments,
                     });
 
                     toolCall.sent = true;
+
+                    delete toolCalls[index];
                   }
 
                   continue;
@@ -768,6 +772,8 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
                   });
 
                   toolCall.sent = true;
+
+                  delete toolCalls[index];
                 }
               }
             }
