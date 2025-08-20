@@ -131,15 +131,31 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
       reasoning: this.settings.reasoning,
       usage: this.settings.usage,
 
+      // Web search settings:
+      plugins: this.settings.plugins,
+      web_search_options: this.settings.web_search_options,
+      // Provider routing settings:
+      provider: this.settings.provider,
+
       // extra body:
       ...this.config.extraBody,
       ...this.settings.extraBody,
     };
 
-    if (responseFormat?.type === 'json') {
+    if (responseFormat?.type === 'json' && responseFormat.schema != null) {
       return {
         ...baseArgs,
-        response_format: { type: 'json_object' },
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            schema: responseFormat.schema,
+            strict: true,
+            name: responseFormat.name ?? 'response',
+            ...(responseFormat.description && {
+              description: responseFormat.description,
+            }),
+          },
+        },
       };
     }
 
@@ -151,7 +167,7 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
           type: 'function' as const,
           function: {
             name: tool.name,
-            description: tool.type,
+            description: tool.description,
             parameters: tool.inputSchema,
           },
         }));
@@ -175,6 +191,7 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
     warnings: Array<LanguageModelV2CallWarning>;
     providerMetadata?: {
       openrouter: {
+        provider: string;
         usage: OpenRouterUsageAccounting;
       };
     };
@@ -308,6 +325,25 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
       }
     }
 
+    if (choice.message.annotations) {
+      for (const annotation of choice.message.annotations) {
+        if (annotation.type === 'url_citation') {
+          content.push({
+            type: 'source' as const,
+            sourceType: 'url' as const,
+            id: annotation.url_citation.url,
+            url: annotation.url_citation.url,
+            title: annotation.url_citation.title,
+            providerMetadata: {
+              openrouter: {
+                content: annotation.url_citation.content || '',
+              },
+            },
+          });
+        }
+      }
+    }
+
     return {
       content,
       finishReason: mapOpenRouterFinishReason(choice.finish_reason),
@@ -315,6 +351,7 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
       warnings: [],
       providerMetadata: {
         openrouter: {
+          provider: response.provider ?? '',
           usage: {
             promptTokens: usageInfo.inputTokens ?? 0,
             completionTokens: usageInfo.outputTokens ?? 0,
@@ -420,6 +457,7 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
     let textId: string | undefined;
     let reasoningId: string | undefined;
     let openrouterResponseId: string | undefined;
+    let provider: string | undefined;
 
     return {
       stream: response.pipeThrough(
@@ -444,6 +482,10 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
               finishReason = 'error';
               controller.enqueue({ type: 'error', error: value.error });
               return;
+            }
+
+            if (value.provider) {
+              provider = value.provider;
             }
 
             if (value.id) {
@@ -507,31 +549,6 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
 
             const delta = choice.delta;
 
-            if (delta.content?.length) {
-              if (reasoningStarted) {
-                controller.enqueue({
-                  type: 'reasoning-end',
-                  id: reasoningId || generateId(),
-                });
-                reasoningStarted = false;
-              }
-
-              if (!textStarted) {
-                textId = openrouterResponseId || generateId();
-                controller.enqueue({
-                  type: 'text-start',
-                  id: textId,
-                });
-                textStarted = true;
-              }
-
-              controller.enqueue({
-                type: 'text-delta',
-                delta: delta.content,
-                id: textId || generateId(),
-              });
-            }
-
             const emitReasoningChunk = (chunkText: string) => {
               if (!reasoningStarted) {
                 reasoningId = openrouterResponseId || generateId();
@@ -576,8 +593,53 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
                   }
                 }
               }
-            } else if (delta.reasoning?.length) {
+            } else if (delta.reasoning) {
               emitReasoningChunk(delta.reasoning);
+            }
+
+            if (delta.content) {
+              // If reasoning was previously active and now we're starting text content,
+              // we should end the reasoning first to maintain proper order
+              if (reasoningStarted && !textStarted) {
+                controller.enqueue({
+                  type: 'reasoning-end',
+                  id: reasoningId || generateId(),
+                });
+                reasoningStarted = false; // Mark as ended so we don't end it again in flush
+              }
+
+              if (!textStarted) {
+                textId = openrouterResponseId || generateId();
+                controller.enqueue({
+                  type: 'text-start',
+                  id: textId,
+                });
+                textStarted = true;
+              }
+              controller.enqueue({
+                type: 'text-delta',
+                delta: delta.content,
+                id: textId || generateId(),
+              });
+            }
+
+            if (delta.annotations) {
+              for (const annotation of delta.annotations) {
+                if (annotation.type === 'url_citation') {
+                  controller.enqueue({
+                    type: 'source',
+                    sourceType: 'url' as const,
+                    id: annotation.url_citation.url,
+                    url: annotation.url_citation.url,
+                    title: annotation.url_citation.title,
+                    providerMetadata: {
+                      openrouter: {
+                        content: annotation.url_citation.content || '',
+                      },
+                    },
+                  });
+                }
+              }
             }
 
             if (delta.tool_calls != null) {
@@ -715,7 +777,7 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
             // Forward any unsent tool calls if finish reason is 'tool-calls'
             if (finishReason === 'tool-calls') {
               for (const toolCall of toolCalls) {
-                if (!toolCall.sent) {
+                if (toolCall && !toolCall.sent) {
                   controller.enqueue({
                     type: 'tool-call',
                     toolCallId: toolCall.id ?? generateId(),
@@ -730,13 +792,13 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
               }
             }
 
+            // End reasoning first if it was started, to maintain proper order
             if (reasoningStarted) {
               controller.enqueue({
                 type: 'reasoning-end',
                 id: reasoningId || generateId(),
               });
             }
-
             if (textStarted) {
               controller.enqueue({
                 type: 'text-end',
@@ -744,14 +806,24 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
               });
             }
 
+            const openrouterMetadata: {
+              usage: Partial<OpenRouterUsageAccounting>;
+              provider?: string;
+            } = {
+              usage: openrouterUsage,
+            };
+            
+            // Only include provider if it's actually set
+            if (provider !== undefined) {
+              openrouterMetadata.provider = provider;
+            }
+            
             controller.enqueue({
               type: 'finish',
               finishReason,
               usage,
               providerMetadata: {
-                openrouter: {
-                  usage: openrouterUsage,
-                },
+                openrouter: openrouterMetadata,
               },
             });
           },
