@@ -782,6 +782,18 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
                 controller.enqueue({
                   type: 'reasoning-end',
                   id: reasoningId || generateId(),
+                  // Include accumulated reasoning_details so the AI SDK can update
+                  // the reasoning part's providerMetadata with the correct signature.
+                  // The signature typically arrives in the last reasoning delta,
+                  // but reasoning-start only carries the first delta's metadata.
+                  providerMetadata:
+                    accumulatedReasoningDetails.length > 0
+                      ? {
+                          openrouter: {
+                            reasoning_details: accumulatedReasoningDetails,
+                          },
+                        }
+                      : undefined,
                 });
                 reasoningStarted = false; // Mark as ended so we don't end it again in flush
               }
@@ -1054,6 +1066,16 @@ export class OpenRouterChatLanguageModel implements LanguageModelV2 {
               controller.enqueue({
                 type: 'reasoning-end',
                 id: reasoningId || generateId(),
+                // Include accumulated reasoning_details so the AI SDK can update
+                // the reasoning part's providerMetadata with the correct signature.
+                providerMetadata:
+                  accumulatedReasoningDetails.length > 0
+                    ? {
+                        openrouter: {
+                          reasoning_details: accumulatedReasoningDetails,
+                        },
+                      }
+                    : undefined,
               });
             }
             if (textStarted) {
